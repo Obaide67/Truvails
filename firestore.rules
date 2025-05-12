@@ -1,0 +1,106 @@
+// /home/ubuntu/community-app/firestore.rules
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function getIncomingData() {
+      return request.resource.data;
+    }
+
+    function getExistingData() {
+      return resource.data;
+    }
+
+    function isValidLevel(points, level) {
+      return (points < 100 && level == 1) ||
+             (points >= 100 && points < 250 && level == 2) ||
+             (points >= 250 && points < 500 && level == 3) ||
+             (points >= 500 && points < 1000 && level == 4) ||
+             (points >= 1000 && level == 5);
+    }
+
+    match /users/{userId} {
+      allow read: if true;
+      allow create: if isOwner(userId) 
+                    && getIncomingData().uid == userId
+                    && getIncomingData().email == request.auth.token.email
+                    && getIncomingData().points == 0
+                    && getIncomingData().level == 1
+                    && getIncomingData().createdAt == request.time;
+      allow update: if isOwner(userId) {
+        // Profile settings update (displayName, bio, photoURL, coverPhotoURL)
+        // Ensures only these fields are changed, and others are untouched.
+        if (getIncomingData().diff(getExistingData()).affectedKeys().hasOnly(['displayName', 'bio', 'photoURL', 'coverPhotoURL'])) {
+          return true;
+        }
+        // Points and level update
+        // Ensures only points and level are changed, increment is valid, and level is valid for points.
+        if (getIncomingData().diff(getExistingData()).affectedKeys().hasOnly(['points', 'level'])) {
+          let pointsIncrement = getIncomingData().points - getExistingData().points;
+          return (pointsIncrement == 1 || pointsIncrement == 5 || pointsIncrement == 10) &&
+                 isValidLevel(getIncomingData().points, getIncomingData().level);
+        }
+        return false;
+      }
+      allow delete: if false; 
+    }
+
+    match /posts/{postId} {
+      allow read: if true;
+      allow create: if isSignedIn() 
+                    && getIncomingData().userId == request.auth.uid
+                    && getIncomingData().userName is string
+                    && getIncomingData().userHandle is string
+                    && getIncomingData().content is string
+                    && getIncomingData().likes == []
+                    && getIncomingData().likeCount == 0
+                    && getIncomingData().commentCount == 0
+                    && getIncomingData().createdAt == request.time
+                    && getIncomingData().updatedAt == request.time;
+      allow update: if isSignedIn() {
+                      // Allow author to update content or image URL
+                      if (getExistingData().userId == request.auth.uid &&
+                          getIncomingData().diff(getExistingData()).affectedKeys().hasOnly(['content', 'imageUrl', 'updatedAt']) &&
+                          getIncomingData().updatedAt == request.time) {
+                        return true;
+                      }
+                      // Allow any authenticated user to like/unlike (update likes array and likeCount)
+                      if (getIncomingData().diff(getExistingData()).affectedKeys().hasOnly(['likes', 'likeCount']) &&
+                          (getIncomingData().likes.hasOnly(getExistingData().likes.concat([request.auth.uid])) || getIncomingData().likes.hasOnly(getExistingData().likes.removed(request.auth.uid))) && 
+                          getIncomingData().likeCount == getIncomingData().likes.size()) {
+                        return true;
+                      }
+                      // Allow commentCount to be incremented/decremented (e.g., by 1)
+                      if (getIncomingData().diff(getExistingData()).affectedKeys().hasOnly(['commentCount']) &&
+                          (getIncomingData().commentCount == getExistingData().commentCount + 1 || getIncomingData().commentCount == getExistingData().commentCount - 1)) {
+                           return true;
+                      }
+                      return false;
+                    };
+      allow delete: if isOwner(getExistingData().userId);
+    }
+
+    match /comments/{commentId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+                    && getIncomingData().userId == request.auth.uid
+                    && getIncomingData().postId is string
+                    && getIncomingData().userName is string
+                    && getIncomingData().content is string
+                    && getIncomingData().createdAt == request.time;
+      allow update: if isOwner(getExistingData().userId) 
+                    && getIncomingData().diff(getExistingData()).affectedKeys().hasOnly(['content']);
+      allow delete: if isOwner(getExistingData().userId);
+    }
+  }
+}
+
